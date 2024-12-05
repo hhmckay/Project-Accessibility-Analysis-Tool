@@ -132,7 +132,7 @@ server <- function(input, output, session) {
     
     if(input$mode_select == "walk") {
       buff_dist <- 5000
-    } else if(input$mode_select == "walk") {
+    } else if(input$mode_select == "bike") {
       buff_dist <- 15000
     } 
     
@@ -239,9 +239,15 @@ server <- function(input, output, session) {
     
     ### Routing 
     
+    if(input$mode_select == "walk") {
+      weight_profile <- "foot"
+    } else if(input$mode_select == "bike") {
+      weight_profile <- "bicycle"
+    } 
+    
     baseline_net <- dodgr_streetnet(bbox)
     
-    baseline_graph <- weight_streetnet(baseline_net, wt_profile = "foot")
+    baseline_graph <- weight_streetnet(baseline_net, wt_profile = weight_profile)
     baseline_time<- dodgr_times(baseline_graph, from = from, to = to)
     
     df_baseline <- apply(baseline_time, 1, FUN=sum, na.rm=TRUE) %>% as_data_frame() %>%
@@ -265,7 +271,7 @@ server <- function(input, output, session) {
       sf::st_as_sf() #%>%
     #dplyr::select(-Name)
     
-    build_graph <- weight_streetnet(combined_geometry, wt_profile = "foot")
+    build_graph <- weight_streetnet(combined_geometry, wt_profile = weight_profile)
     build_time<- dodgr_times(build_graph, from = from, to = to)
     
     ### Calculate access
