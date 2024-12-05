@@ -25,10 +25,8 @@ library(tidycensus)
 library(osmdata)
 library(geodist)
 
-# UI definition
-ui <- fluidPage(
-  titlePanel("Analyze Access"),
-  
+tab1 <- tabPanel(
+  title = "Access Analysis",
   sidebarLayout(
     sidebarPanel(
       textInput("project_name", "Project Name", value = ""),
@@ -36,8 +34,14 @@ ui <- fluidPage(
         "mode_select",
         "Select Mode",
         choices = list("Walk" = "walk", "Bike" = "bike"),
-        selected = 1
-    ),
+        selected = "walk"
+      ),
+      radioButtons(
+        "modification_select",
+        "Select Modification Type",
+        choices = list("Add New Network Links" = "new", "Modify Existing Network Links" = "modify"),
+        selected = "new"
+      ),
       actionButton("create_buffer", "Run Analysis")
     ),
     
@@ -48,16 +52,41 @@ ui <- fluidPage(
   )
 )
 
+tab2 <- tabPanel(
+  title = "Advanced Configuration",
+  mainPanel(
+    strong("Advanced configuration parameters:"),
+    p("Parameters will go here.")
+  )
+)
+
+tab3 <- tabPanel(
+  title = "Instructions",
+  mainPanel(
+    strong("Instructions on how to use this web mapping application:"),
+    p("The instructions will go here.")
+  )
+)
+
+ui <- navbarPage(
+  title = "Acccess to Destinations Scenario Analysis Tool",
+  tab1,
+  tab2,
+  tab3
+)
+
+
+
 # Server logic
 server <- function(input, output, session) {
   
   # Create a reactive value to store the drawn line
-  drawn_line <- reactiveVal(NULL)
+  drawn_feature <- reactiveVal(NULL)
   
   # Render the map
   output$map <- renderLeaflet({
     leaflet() %>%
-      addTiles() %>%
+      addProviderTiles(providers$CartoDB.Positron) %>%
       setView(lng = -119.4179, lat = 36.7783, zoom = 5.2) %>%
       addDrawToolbar(
         targetGroup = "drawn_lines",
@@ -69,23 +98,37 @@ server <- function(input, output, session) {
       ) 
   })
   
-  
-  # Observe the drawing of a line on the map
   observeEvent(input$map_draw_new_feature, {
-    # Get the coordinates of the drawn line
-    feature <- input$map_draw_new_feature
-    if (feature$geometry$type == "LineString") {
-      line_coords <- feature$geometry$coordinates
-      # Store the drawn line coordinates
-      drawn_line(st_as_sf(data.frame(
-        id = 1, geometry = st_sfc(st_linestring(matrix(unlist(line_coords), ncol = 2, byrow = TRUE)))),
-        crs = 4326))
-    }
-  })
+  
+  if(input$modification_select == "new") {
+    
+      # Get the coordinates of the drawn line
+      feature <- input$map_draw_new_feature
+      if (feature$geometry$type == "LineString") {
+        line_coords <- feature$geometry$coordinates
+        # Store the drawn line coordinates
+        drawn_feature(st_as_sf(data.frame(
+          id = 1, geometry = st_sfc(st_linestring(matrix(unlist(line_coords), ncol = 2, byrow = TRUE)))),
+          crs = 4326))
+      }
+
+  } else if(input$modification_select == "modify") {
+    
+      # Get the coordinates of the drawn line
+      feature <- input$map_draw_new_feature
+      if (feature$geometry$type == "Polygon") {
+        polygon_coords <- feature$geometry$coordinates
+        # Store the drawn line coordinates
+        drawn_feature(st_as_sf(data.frame(
+          id = 1, geometry = st_sfc(st_linestring(matrix(unlist(polygon_coords), ncol = 2, byrow = TRUE)))),
+          crs = 4326))
+      }
+  }
+})
   
   # Create a buffer when the button is clicked
   observeEvent(input$create_buffer, {
-    req(drawn_line())  # Ensure a line is drawn before creating buffer
+    req(drawn_feature())  # Ensure a line is drawn before creating buffer
     
     if(input$mode_select == "walk") {
       buff_dist <- 5000
@@ -94,7 +137,7 @@ server <- function(input, output, session) {
     } 
     
     
-    line_sf <- drawn_line()
+    line_sf <- drawn_feature()
     buffer_distance <- buff_dist  # Get the buffer from the selected mode
     
     # Create the buffer
@@ -109,7 +152,7 @@ server <- function(input, output, session) {
     
     grid <- grid %>%
       st_as_sf()
-      grid$grid_id <- seq.int(nrow(grid))
+    grid$grid_id <- seq.int(nrow(grid))
     
     bbox <- st_bbox(grid)
     
@@ -187,9 +230,9 @@ server <- function(input, output, session) {
       st_drop_geometry()
     
     grid_merge <- merge(grid,
-                  points_int,
-                  by = "grid_id",
-                  all.x = T)
+                        points_int,
+                        by = "grid_id",
+                        all.x = T)
     
     grid_merge[is.na(grid_merge)] <- 0
     
@@ -205,7 +248,7 @@ server <- function(input, output, session) {
       rename("baseline_times" = "value")
     
     line_sf <- line_sf %>%
-    st_as_sf() %>%
+      st_as_sf() %>%
       mutate(osm_id = as.character(max(as.numeric(baseline_net$osm_id)) + 1),
              highway = "residential")
     
@@ -220,7 +263,7 @@ server <- function(input, output, session) {
     # Merge
     combined_geometry <- dplyr::bind_rows(baseline_net_split, modification_split) %>%
       sf::st_as_sf() #%>%
-      #dplyr::select(-Name)
+    #dplyr::select(-Name)
     
     build_graph <- weight_streetnet(combined_geometry, wt_profile = "foot")
     build_time<- dodgr_times(build_graph, from = from, to = to)
@@ -234,7 +277,7 @@ server <- function(input, output, session) {
     poi_matrix <- matrix(rep(poi_matrix, ncol(baseline_time)), nrow = nrow(grid_merge), byrow = FALSE)
     poi_matrix <- apply(t(poi_matrix), 2, rev)
     
-
+    
     
     baseline_access <- poi_matrix * exp(log(0.5) / (15 * 60) * (((baseline_time / 60)) * 60))
     build_access <- poi_matrix * exp(log(0.5) / (15 * 60) * (((build_time / 60)) * 60))
@@ -263,7 +306,7 @@ server <- function(input, output, session) {
       mutate(access_change = build_access - baseline_access) %>%
       mutate(access_change_clean = ifelse(is.infinite(access_change), 0, access_change)) %>%
       mutate(pop_est_clean = ifelse(is.na(pop_est), 0, pop_est))
-
+    
     avg_pct_change <- weighted.mean(geo_table$access_pct_change_clean, geo_table$pop_est_clean, na.rm = T)
     avg_change <- weighted.mean(geo_table$access_change_clean, geo_table$pop_est_clean, na.rm = T)
     
