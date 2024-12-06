@@ -89,9 +89,13 @@ server <- function(input, output, session) {
       addProviderTiles(providers$CartoDB.Positron) %>%
       setView(lng = -119.4179, lat = 36.7783, zoom = 5.2) %>%
       addDrawToolbar(
-        targetGroup = "drawn_lines",
-        polylineOptions = drawPolylineOptions(),
+        targetGroup = "drawn_feature",
+        polylineOptions = FALSE,
         polygonOptions = drawPolygonOptions(),
+        rectangleOptions = FALSE,
+        circleOptions = FALSE,
+        circleMarkerOptions = FALSE,
+        markerOptions = FALSE,
         editOptions = editToolbarOptions(
           selectedPathOptions = selectedPathOptions()
         )
@@ -100,10 +104,13 @@ server <- function(input, output, session) {
   
   observeEvent(input$map_draw_new_feature, {
     
-    if(input$modification_select == "new") {
+    feature <- input$map_draw_new_feature
+    
+    print(paste("Feature geometry type: ", feature$geometry$type))
+    
       
       # Get the coordinates of the drawn line
-      feature <- input$map_draw_new_feature
+      #feature <- input$map_draw_new_feature
       if (feature$geometry$type == "LineString") {
         line_coords <- feature$geometry$coordinates
         # Store the drawn line coordinates
@@ -112,18 +119,31 @@ server <- function(input, output, session) {
           crs = 4326))
       }
       
-    } else if(input$modification_select == "modify") {
-      
       # Get the coordinates of the drawn line
-      feature <- input$map_draw_new_feature
+      #feature <- input$map_draw_new_feature
       if (feature$geometry$type == "Polygon") {
-        polygon_coords <- feature$geometry$coordinates
+        #polygon_coords <- feature$geometry$coordinates
+        
+        #polygon_coords <- lapply(polygon_coords, function(x) matrix(unlist(x), ncol = 2, byrow = TRUE))
         # Store the drawn line coordinates
-        drawn_feature(st_as_sf(data.frame(
-          id = 1, geometry = st_sfc(st_linestring(matrix(unlist(polygon_coords), ncol = 2, byrow = TRUE)))),
-          crs = 4326))
+        #drawn_feature(st_as_sf(data.frame(
+          #id = 1, geometry = st_sfc(st_polygon(polygon_coords))),
+          #crs = 4326))
+        
+        coords <- feature$geometry$coordinates[[1]]  # Extract the first polygon's coordinates
+        
+        coords <- matrix(unlist(coords), ncol = 2, byrow = TRUE)  # Convert to a numeric matrix
+        
+        
+        # Convert the coordinates into an SF object
+        polygon_sf <- st_sfc(st_polygon(list(coords)), crs = 4326)
+        
+        #polygon_sf <- st_as_sf(feature)
+        
+        drawn_feature(polygon_sf)
+
       }
-    }
+    
   })
   
   # Create a buffer when the button is clicked
@@ -133,11 +153,12 @@ server <- function(input, output, session) {
     if(input$mode_select == "walk") {
       buff_dist <- 5000
     } else if(input$mode_select == "bike") {
-      buff_dist <- 1000
+      buff_dist <- 5000
     } 
     
     
     line_sf <- drawn_feature()
+    
     buffer_distance <- buff_dist  # Get the buffer from the selected mode
     
     # Create the buffer
@@ -281,20 +302,49 @@ server <- function(input, output, session) {
       
     } else if(input$modification_select == "modify") {
       
-      contained_segments <- baseline_net[st_within(baseline_net, line_sf, sparse = FALSE), ]
+      combined_geometry <- baseline_net %>%
+        st_transform(4326)
       
-      contained_segments$highway <- "cycleway"
+      line_sf <- line_sf %>%
+        st_as_sf(crs = 4326) %>%
+        #st_union() %>%
+        st_transform(4326)
       
-      non_contained_segments <- baseline_net[!st_within(baseline_net, line_sf, sparse = FALSE), ]
+      print(st_geometry_type(drawn_feature()))
       
-      combined_geometry <- dplyr::bind_rows(non_contained_segments, contained_segments) %>%
-        sf::st_as_sf() #%>%
+      line_sf <- line_sf[st_geometry_type(line_sf) %in% c("POLYGON", "MULTIPOLYGON"), ]
+      
+      print(st_geometry_type(line_sf)) 
+      
+      contained_indices <- st_within(combined_geometry, drawn_feature(), sparse = FALSE)
+  
+      
+      #contained <- apply(contained_indices, 1, any)
+      
+      print(length(line_sf))
+      print(length(contained_indices))
+      print(length(combined_geometry))
+      
+      if (any(contained_indices)) {
+        # Add a new attribute to indicate whether each segment is "Inside" or "Outside"
+        combined_geometry[["highway"]] <- ifelse(contained_indices[, 1], "cycleway", combined_geometry[["highway"]])
+        
+      
+        #combined_geometry <- dplyr::bind_rows(non_contained_segments, contained_segments) %>%
+          #sf::st_as_sf() #%>%
+        
+      } else {
+        # Handle the case where no road segments are entirely contained
+        cat("No road segments are entirely contained within the polygon.\n")
+      }
       
       build_graph <- weight_streetnet(combined_geometry, wt_profile = weight_profile)
       build_time<- dodgr_times(build_graph, from = from, to = to)
       
     } 
     
+    
+  
     
     ### Calculate access
     poi_matrix <- grid_merge %>%
