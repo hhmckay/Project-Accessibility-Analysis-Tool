@@ -25,6 +25,8 @@ library(tidycensus)
 library(osmdata)
 library(geodist)
 
+weight <- "/Users/S152973/OneDrive - California Department of Transportation/Documents/PedAccessibilityApp/AccessAnalysis/data/wt_profile.json"
+
 tab1 <- tabPanel(
   title = "Access Analysis",
   sidebarLayout(
@@ -90,7 +92,7 @@ server <- function(input, output, session) {
       setView(lng = -119.4179, lat = 36.7783, zoom = 5.2) %>%
       addDrawToolbar(
         targetGroup = "drawn_feature",
-        polylineOptions = FALSE,
+        polylineOptions = drawPolylineOptions(),
         polygonOptions = drawPolygonOptions(),
         rectangleOptions = FALSE,
         circleOptions = FALSE,
@@ -153,7 +155,7 @@ server <- function(input, output, session) {
     if(input$mode_select == "walk") {
       buff_dist <- 5000
     } else if(input$mode_select == "bike") {
-      buff_dist <- 5000
+      buff_dist <- 1000
     } 
     
     
@@ -234,7 +236,7 @@ server <- function(input, output, session) {
     ####
     # Define the type of POIs you want to download
     poi_type <- "amenity" # Choose a key, e.g., "amenity"
-    poi_value <- "cafe" # Choose a value, e.g., "restaurant"
+    poi_value <- "restaurant" # Choose a value, e.g., "restaurant"
     
     # Fetch data from OpenStreetMap
     osm_data <- opq(bbox = bbox) %>%
@@ -270,19 +272,15 @@ server <- function(input, output, session) {
     
     baseline_net <- dodgr_streetnet(bbox)
     
-    baseline_graph <- weight_streetnet(baseline_net, wt_profile = weight_profile)
-    baseline_time <- dodgr_times(baseline_graph, from = from, to = to)
-    
-    df_baseline <- apply(baseline_time, 1, FUN=sum, na.rm=TRUE) %>% as_data_frame() %>%
-      rename("baseline_times" = "value")
-    
+    baseline_graph <- weight_streetnet(baseline_net, wt_profile = weight_profile, wt_profile_file = weight, type_col = "highway", id_col = "osm_id")
+    baseline_time <- dodgr_times(baseline_graph, from = from, to = to, shortest = FALSE)
     
     if(input$modification_select == "new") {
       
       line_sf <- line_sf %>%
         st_as_sf() %>%
         mutate(osm_id = as.character(max(as.numeric(baseline_net$osm_id)) + 1),
-               highway = "residential")
+               highway = "cycleway")
       
       baseline_net_split <- st_split(baseline_net, line_sf) %>%
         st_collection_extract("LINESTRING") %>%
@@ -297,8 +295,8 @@ server <- function(input, output, session) {
         sf::st_as_sf() #%>%
       #dplyr::select(-Name)
       
-      build_graph <- weight_streetnet(combined_geometry, wt_profile = weight_profile)
-      build_time<- dodgr_times(build_graph, from = from, to = to)
+      build_graph <- weight_streetnet(combined_geometry, wt_profile = weight_profile, wt_profile_file = weight, type_col = "highway", id_col = "osm_id")
+      build_time<- dodgr_times(build_graph, from = from, to = to, shortest = FALSE)
       
     } else if(input$modification_select == "modify") {
       
@@ -335,13 +333,13 @@ server <- function(input, output, session) {
         
       } else {
         # Handle the case where no road segments are entirely contained
-        cat("No road segments are entirely contained within the polygon.\n")
+        cat("No road segments are entirely contained within the polygon./n")
       }
       
-      build_graph <- weight_streetnet(combined_geometry, wt_profile = weight_profile)
-      build_time<- dodgr_times(build_graph, from = from, to = to)
+      build_graph <- weight_streetnet(combined_geometry, wt_profile = weight_profile, wt_profile_file = weight, type_col = "highway", id_col = "osm_id")
+      build_time<- dodgr_times(build_graph, from = from, to = to, shortest = FALSE)
       
-    } 
+    }
     
     
   
@@ -396,7 +394,7 @@ server <- function(input, output, session) {
     # Create a color palette
     palette <- colorNumeric(palette = "viridis", domain = geo$access_change)
     
-    # Render the buffer on the map
+    #Render the buffer on the map
     leafletProxy("map") %>%
       clearGroup("buffer") %>%
       addPolygons(
@@ -411,6 +409,14 @@ server <- function(input, output, session) {
                 values = geo$access_change,
                 title = "Access Change",
                 opacity = 0.5)
+    
+    # View build road network
+    # leafletProxy("map") %>%
+    #   addPolylines(
+    #     data = combined_geometry,
+    #     popup = ~paste("Highway: ", combined_geometry$highway)
+    #   )
+    
     
     output$feature_table <- renderDT({
       datatable(output_table,
