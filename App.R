@@ -25,8 +25,10 @@ library(tidycensus)
 library(osmdata)
 library(geodist)
 
-weight <- "/Username/OneDrive - California Department of Transportation/Documents/PedAccessibilityApp/AccessAnalysis/data/wt_profile.json"
+# Path to custom LTS weighting file
+weight <- "/Users/Username/OneDrive - California Department of Transportation/Documents/PedAccessibilityApp/AccessAnalysis/data/wt_profile.json"
 
+### UI
 tab1 <- tabPanel(
   title = "Access Analysis",
   sidebarLayout(
@@ -44,7 +46,35 @@ tab1 <- tabPanel(
         choices = list("Add New Network Links" = "new", "Modify Existing Network Links" = "modify"),
         selected = "new"
       ),
-      actionButton("create_buffer", "Run Analysis")
+      selectInput(
+        "mod_type",
+        "Select OSM Way Type for Modification:",
+        c("motorway",
+          "trunk",
+          "primary",
+          "secondary",
+          "tertiary",
+          "unclassified",
+          "residential",
+          "service",
+          "track",
+          "cycleway",
+          "path",
+          "steps",
+          "ferry",
+          "living_street",
+          "bridleway",
+          "footway",
+          "pedestrian",
+          "motorway_link",
+          "trunk_link",
+          "primary_link",
+          "secondary_link",
+          "tertiary_link"),
+        selected = "residential",
+        multiple = FALSE
+      ),
+      actionButton("run_analysis", "Run Analysis")
     ),
     
     mainPanel(
@@ -58,7 +88,25 @@ tab2 <- tabPanel(
   title = "Advanced Configuration",
   mainPanel(
     strong("Advanced configuration parameters:"),
-    p("Parameters will go here.")
+    p("Parameters will go here."),
+    strong("Analysis Area Parameters:"),
+    p("Set the buffer that will determine the size of the study area for each mode."),
+    numericInput(
+      "walk_radius",
+      "Set Walk Analysis Radius (in miles):",
+      1,
+      min = .25,
+      max = 3,
+      step = .25
+    ),
+    numericInput(
+      "bike_radius",
+      "Set Bike Analysis Radius (in miles):",
+      3,
+      min = .25,
+      max = 10,
+      step = .25
+    )
   )
 )
 
@@ -77,15 +125,13 @@ ui <- navbarPage(
   tab3
 )
 
-
-
-# Server logic
+### Server
 server <- function(input, output, session) {
   
-  # Create a reactive value to store the drawn line
+  # Reactive value to store the drawn feature
   drawn_feature <- reactiveVal(NULL)
-  
-  # Render the map
+
+  # Render the leaflet map
   output$map <- renderLeaflet({
     leaflet() %>%
       addProviderTiles(providers$CartoDB.Positron) %>%
@@ -104,15 +150,12 @@ server <- function(input, output, session) {
       ) 
   })
   
+  # Observe event for when input is drawn
   observeEvent(input$map_draw_new_feature, {
     
     feature <- input$map_draw_new_feature
     
-    print(paste("Feature geometry type: ", feature$geometry$type))
-    
-      
       # Get the coordinates of the drawn line
-      #feature <- input$map_draw_new_feature
       if (feature$geometry$type == "LineString") {
         line_coords <- feature$geometry$coordinates
         # Store the drawn line coordinates
@@ -121,47 +164,29 @@ server <- function(input, output, session) {
           crs = 4326))
       }
       
-      # Get the coordinates of the drawn line
-      #feature <- input$map_draw_new_feature
+      # Get the coordinates of the drawn polygon
       if (feature$geometry$type == "Polygon") {
-        #polygon_coords <- feature$geometry$coordinates
-        
-        #polygon_coords <- lapply(polygon_coords, function(x) matrix(unlist(x), ncol = 2, byrow = TRUE))
-        # Store the drawn line coordinates
-        #drawn_feature(st_as_sf(data.frame(
-          #id = 1, geometry = st_sfc(st_polygon(polygon_coords))),
-          #crs = 4326))
-        
-        coords <- feature$geometry$coordinates[[1]]  # Extract the first polygon's coordinates
-        
-        coords <- matrix(unlist(coords), ncol = 2, byrow = TRUE)  # Convert to a numeric matrix
-        
-        
+        coords <- feature$geometry$coordinates[[1]]
+        coords <- matrix(unlist(coords), ncol = 2, byrow = TRUE)
         # Convert the coordinates into an SF object
         polygon_sf <- st_sfc(st_polygon(list(coords)), crs = 4326)
-        
-        #polygon_sf <- st_as_sf(feature)
-        
         drawn_feature(polygon_sf)
-
       }
-    
   })
   
-  # Create a buffer when the button is clicked
-  observeEvent(input$create_buffer, {
-    req(drawn_feature())  # Ensure a line is drawn before creating buffer
+  # Run the analysis when the run analysis button is pressed
+  observeEvent(input$run_analysis, {
+    req(drawn_feature())
     
     if(input$mode_select == "walk") {
-      buff_dist <- 5000
+      buff_dist <- input$walk_radius * 1609.34
     } else if(input$mode_select == "bike") {
-      buff_dist <- 5000
+      buff_dist <- input$bike_radius * 1609.34
     } 
-    
     
     line_sf <- drawn_feature()
     
-    buffer_distance <- buff_dist  # Get the buffer from the selected mode
+    buffer_distance <- buff_dist
     
     # Create the buffer
     buffer_sf <- st_buffer(line_sf, dist = buffer_distance)
@@ -177,10 +202,10 @@ server <- function(input, output, session) {
       st_as_sf()
     grid$grid_id <- seq.int(nrow(grid))
     
+    # Create bounding box around the grid
     bbox <- st_bbox(grid)
     
-    
-    ### Define origin/dest points ###
+    # Define origin/dest points
     geo_point <- grid %>%
       st_as_sf() %>%
       st_centroid(geo) %>%
@@ -200,8 +225,7 @@ server <- function(input, output, session) {
       select(to_x, to_y) %>%
       as.matrix()
     
-    ### Download population data
-    # Get income data
+    # Download population data
     ca_pop <- get_acs(
       geography = "tract",
       state = 06,
@@ -233,17 +257,13 @@ server <- function(input, output, session) {
     
     
     ### Download OSM POIs
-    ####
-    # Define the type of POIs you want to download
-    poi_type <- "amenity" # Choose a key, e.g., "amenity"
-    poi_value <- "restaurant" # Choose a value, e.g., "restaurant"
+    poi_type <- "amenity"
+    poi_value <- "restaurant"
     
-    # Fetch data from OpenStreetMap
     osm_data <- opq(bbox = bbox) %>%
       add_osm_feature(key = poi_type, value = poi_value) %>%
       osmdata_sf()
     
-    # Extract points of interest (POIs)
     poi_points <- osm_data$osm_points %>%
       mutate(count = 1)
     
@@ -268,8 +288,7 @@ server <- function(input, output, session) {
       weight_profile <- "bicycle"
     } 
     
-    
-    
+    # Extract OSM network
     baseline_net <- dodgr_streetnet(bbox)
     
     baseline_graph <- weight_streetnet(baseline_net, wt_profile = weight_profile, wt_profile_file = weight, type_col = "highway", id_col = "osm_id")
@@ -283,7 +302,7 @@ server <- function(input, output, session) {
       line_sf <- line_sf %>%
         st_as_sf() %>%
         mutate(osm_id = as.character(max(as.numeric(baseline_net$osm_id)) + 1),
-               highway = "cycleway")
+               highway = input$mod_type)
       
       baseline_net_split <- st_split(baseline_net, line_sf) %>%
         st_collection_extract("LINESTRING") %>%
@@ -295,13 +314,10 @@ server <- function(input, output, session) {
       
       # Merge
       combined_geometry <- dplyr::bind_rows(baseline_net_split, modification_split) %>%
-        sf::st_as_sf() #%>%
-      #dplyr::select(-Name)
+        sf::st_as_sf()
       
       build_graph <- weight_streetnet(combined_geometry, wt_profile = weight_profile, wt_profile_file = weight, type_col = "highway", id_col = "osm_id")
-      
       build_graph$time <- build_graph$time_weighted
-      
       build_time<- dodgr_times(build_graph, from = from, to = to, shortest = FALSE)
       
     } else if(input$modification_select == "modify") {
@@ -311,47 +327,24 @@ server <- function(input, output, session) {
       
       line_sf <- line_sf %>%
         st_as_sf(crs = 4326) %>%
-        #st_union() %>%
         st_transform(4326)
       
-      print(st_geometry_type(drawn_feature()))
-      
       line_sf <- line_sf[st_geometry_type(line_sf) %in% c("POLYGON", "MULTIPOLYGON"), ]
-      
-      print(st_geometry_type(line_sf)) 
-      
+    
       contained_indices <- st_within(combined_geometry, drawn_feature(), sparse = FALSE)
-  
-      
-      #contained <- apply(contained_indices, 1, any)
-      
-      print(length(line_sf))
-      print(length(contained_indices))
-      print(length(combined_geometry))
       
       if (any(contained_indices)) {
-        # Add a new attribute to indicate whether each segment is "Inside" or "Outside"
-        combined_geometry[["highway"]] <- ifelse(contained_indices[, 1], "cycleway", combined_geometry[["highway"]])
-        
-      
-        #combined_geometry <- dplyr::bind_rows(non_contained_segments, contained_segments) %>%
-          #sf::st_as_sf() #%>%
+        # Add a new attribute to road segments contained entirely within polygon
+        combined_geometry[["highway"]] <- ifelse(contained_indices[, 1], input$mod_type, combined_geometry[["highway"]])
         
       } else {
-        # Handle the case where no road segments are entirely contained
-        cat("No road segments are entirely contained within the polygon./n")
+        cat("No road segments contained within selection area:")
       }
       
       build_graph <- weight_streetnet(combined_geometry, wt_profile = weight_profile, wt_profile_file = weight, type_col = "highway", id_col = "osm_id")
-      
       build_graph$time <- build_graph$time_weighted
-      
       build_time<- dodgr_times(build_graph, from = from, to = to, shortest = FALSE)
-      
     }
-    
-    
-  
     
     ### Calculate access
     poi_matrix <- grid_merge %>%
@@ -362,14 +355,11 @@ server <- function(input, output, session) {
     poi_matrix <- matrix(rep(poi_matrix, ncol(baseline_time)), nrow = nrow(grid_merge), byrow = FALSE)
     poi_matrix <- apply(t(poi_matrix), 2, rev)
     
-    
-    
     baseline_access <- poi_matrix * exp(log(0.5) / (15 * 60) * (((baseline_time / 60)) * 60))
     build_access <- poi_matrix * exp(log(0.5) / (15 * 60) * (((build_time / 60)) * 60))
     
     df_baseline <- apply(baseline_access, 1, FUN=sum, na.rm=TRUE) %>% as_data_frame() %>%
       rename("baseline_access" = "value")
-    
     
     df_build <- apply(build_access, 1, FUN=sum, na.rm=TRUE) %>% as_data_frame() %>%
       rename("build_access" = "value")
@@ -399,7 +389,6 @@ server <- function(input, output, session) {
                                Avg_Pct_Change = avg_pct_change,
                                Avg_Change = avg_change)
     
-    
     # Create a color palette
     palette <- colorNumeric(palette = "viridis", domain = geo$access_change)
     
@@ -418,14 +407,6 @@ server <- function(input, output, session) {
                 values = geo$access_change,
                 title = "Access Change",
                 opacity = 0.5)
-    
-    # View build road network
-    # leafletProxy("map") %>%
-    #   addPolylines(
-    #     data = combined_geometry,
-    #     popup = ~paste("Highway: ", combined_geometry$highway)
-    #   )
-    
     
     output$feature_table <- renderDT({
       datatable(output_table,
