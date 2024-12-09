@@ -25,8 +25,11 @@ library(tidycensus)
 library(osmdata)
 library(geodist)
 
+# Set wd to local to run locally
+#setwd("/Users/username/OneDrive - California Department of Transportation/Documents/PedAccessibilityApp/AccessAnalysis/")
+
 # Path to custom LTS weighting file
-weight <- "/Users/Username/OneDrive - California Department of Transportation/Documents/PedAccessibilityApp/AccessAnalysis/data/wt_profile.json"
+weight <- "data/wt_profile.json"
 
 ### UI
 tab1 <- tabPanel(
@@ -49,28 +52,28 @@ tab1 <- tabPanel(
       selectInput(
         "mod_type",
         "Select OSM Way Type for Modification:",
-        c("motorway",
-          "trunk",
-          "primary",
-          "secondary",
-          "tertiary",
-          "unclassified",
-          "residential",
-          "service",
-          "track",
+        c("bridleway",
           "cycleway",
-          "path",
-          "steps",
           "ferry",
-          "living_street",
-          "bridleway",
           "footway",
-          "pedestrian",
+          "living_street",
+          "motorway",
           "motorway_link",
-          "trunk_link",
+          "path",
+          "pedestrian",
+          "primary",
           "primary_link",
+          "residential",
+          "secondary",
           "secondary_link",
-          "tertiary_link"),
+          "service",
+          "steps",
+          "tertiary",
+          "tertiary_link",
+          "track",
+          "trunk",
+          "trunk_link",
+          "unclassified"),
         selected = "residential",
         multiple = FALSE
       ),
@@ -106,6 +109,14 @@ tab2 <- tabPanel(
       min = .25,
       max = 10,
       step = .25
+    ),
+    numericInput(
+      "halflife",
+      "Set Half-Life for Exponential Decay Function (in minutes):",
+      15,
+      min = 5,
+      max = 60,
+      step = 1
     )
   )
 )
@@ -225,60 +236,29 @@ server <- function(input, output, session) {
       select(to_x, to_y) %>%
       as.matrix()
     
-    # Download population data
-    ca_pop <- get_acs(
-      geography = "tract",
-      state = 06,
-      variables = "B01003_001",
-      year = 2021,
-      survey = "acs5",
-      geometry = T
-    ) %>%
-      dplyr::select(GEOID, estimate) %>%
-      st_transform(3310) %>%
-      st_as_sf()
+    land_use <- readRDS("data/land_use.rds") %>%
+      st_transform(3310)
     
-    ca_pop$original_area <- st_area(ca_pop)
+    land_use$original_area <- st_area(land_use)
     
     grid_int <- grid %>%
       st_transform(3310)
     
-    geo_intersect <- st_intersection(grid_int, ca_pop)
+    geo_intersect <- st_intersection(grid_int, land_use)
     
     geo_intersect$new_area <- st_area(geo_intersect)
     
     geo_intersect <- geo_intersect %>%
-      mutate(pop = as.numeric(estimate * (new_area / original_area))) %>%
+      mutate(pop_est = as.numeric(population * (new_area / original_area)),
+             poi_est = as.numeric(poi_count * (new_area / original_area))) %>%
       group_by(grid_id) %>%
-      summarise(pop_est = sum(pop))
+      summarise(pop_est = sum(pop_est),
+                poi_est = sum(poi_est))
     
-    geo_pop <- geo_intersect %>%
+    grid_merge <- geo_intersect %>%
       st_drop_geometry()
-    
-    
-    ### Download OSM POIs
-    poi_type <- "amenity"
-    poi_value <- "restaurant"
-    
-    osm_data <- opq(bbox = bbox) %>%
-      add_osm_feature(key = poi_type, value = poi_value) %>%
-      osmdata_sf()
-    
-    poi_points <- osm_data$osm_points %>%
-      mutate(count = 1)
-    
-    points_int <- st_intersection(poi_points, grid) %>%
-      group_by(grid_id) %>%
-      summarise(poi_count = sum(count)) %>%
-      st_drop_geometry()
-    
-    grid_merge <- merge(grid,
-                        points_int,
-                        by = "grid_id",
-                        all.x = T)
     
     grid_merge[is.na(grid_merge)] <- 0
-    
     
     ### Routing 
     
@@ -348,15 +328,23 @@ server <- function(input, output, session) {
     
     ### Calculate access
     poi_matrix <- grid_merge %>%
-      select(poi_count) %>%
+      select(poi_est) %>%
       st_drop_geometry() %>%
       as.matrix()
+    
+    #job_matrix <- grid_merge %>%
+      #select(job_est) %>%
+      #st_drop_geometry() %>%
+      #as.matrix()
     
     poi_matrix <- matrix(rep(poi_matrix, ncol(baseline_time)), nrow = nrow(grid_merge), byrow = FALSE)
     poi_matrix <- apply(t(poi_matrix), 2, rev)
     
-    baseline_access <- poi_matrix * exp(log(0.5) / (15 * 60) * (((baseline_time / 60)) * 60))
-    build_access <- poi_matrix * exp(log(0.5) / (15 * 60) * (((build_time / 60)) * 60))
+    #job_matrix <- matrix(rep(job_matrix, ncol(baseline_time)), nrow = nrow(grid_merge), byrow = FALSE)
+    #job_matrix <- apply(t(job_matrix), 2, rev)
+    
+    baseline_access <- poi_matrix * exp(log(0.5) / (input$halflife * 60) * (((baseline_time / 60)) * 60))
+    build_access <- poi_matrix * exp(log(0.5) / (input$halflife * 60) * (((build_time / 60)) * 60))
     
     df_baseline <- apply(baseline_access, 1, FUN=sum, na.rm=TRUE) %>% as_data_frame() %>%
       rename("baseline_access" = "value")
@@ -370,7 +358,7 @@ server <- function(input, output, session) {
       mutate(access_change = build_access - baseline_access)
     
     geo <- merge(geo,
-                 geo_pop,
+                 grid_merge,
                  by = "grid_id",
                  all.x = T)
     
