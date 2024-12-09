@@ -25,8 +25,7 @@ library(tidycensus)
 library(osmdata)
 library(geodist)
 
-# Set wd to local to run locally
-#setwd("/Users/username/OneDrive - California Department of Transportation/Documents/PedAccessibilityApp/AccessAnalysis/")
+#setwd("/Users/Username/OneDrive - California Department of Transportation/Documents/PedAccessibilityApp/AccessAnalysis/")
 
 # Path to custom LTS weighting file
 weight <- "data/wt_profile.json"
@@ -117,6 +116,14 @@ tab2 <- tabPanel(
       min = 5,
       max = 60,
       step = 1
+    ),
+    numericInput(
+      "gridsize",
+      "Set Grid Size:",
+      .005,
+      min = .001,
+      max = .01,
+      step = .0005
     )
   )
 )
@@ -203,7 +210,7 @@ server <- function(input, output, session) {
     buffer_sf <- st_buffer(line_sf, dist = buffer_distance)
     
     # Create grid
-    grid <- st_make_grid(buffer_sf, square = FALSE, cellsize = .003)
+    grid <- st_make_grid(buffer_sf, square = FALSE, cellsize = input$gridsize)
     
     grid_int = lengths(st_intersects(grid, buffer_sf)) > 0
     
